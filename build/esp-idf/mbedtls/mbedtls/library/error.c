@@ -1,1 +1,0 @@
-/Users/olesaivasuk/esp/v5.5.1/esp-idf/components/mbedtls/mbedtls/library/error.c
