@@ -1,12 +1,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
+
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_task_wdt.h"
+
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "esp_netif.h"
+#include "esp_http_client.h"
 
 // ========= PIN ASSIGNMENTS =========
 #define PIN_TOGGLE     GPIO_NUM_2
@@ -17,6 +25,17 @@
 #define MM_N           20
 #define RUNS_PER_BENCH 5
 #define BUSY_ITER      5000
+
+// ========= FFT CONFIG =========
+#define FFT_N    256
+#define FFT_RUNS 10
+#define PI 3.14159265358979323846
+
+// ========= WIFI CONFIG =========
+#define WIFI_SSID "Olesya"
+#define WIFI_PASS "olesa200524"
+#define HTTP_URL "http://httpbin.org/get"
+#define HTTP_REQS 20
 
 // ========= UTILS =========
 static inline void marker_high(void){ gpio_set_level(PIN_MARKER, 1); }
@@ -177,6 +196,124 @@ static double bench_busy_loop(size_t *heap_before, size_t *heap_after) {
     return (double)(t1 - t0);
 }
 
+// ========= FFT CORE =========
+static void bit_reverse(double *re, double *im, int n) {
+    int j = 0;
+    for (int i = 0; i < n; i++) {
+        if (i < j) {
+            double tr = re[i], ti = im[i];
+            re[i] = re[j]; im[i] = im[j];
+            re[j] = tr;    im[j] = ti;
+        }
+        int bit = n >> 1;
+        while (j & bit) { j ^= bit; bit >>= 1; }
+        j |= bit;
+    }
+}
+
+static void fft_inplace(double *re, double *im, int n) {
+    bit_reverse(re, im, n);
+
+    for (int len = 2; len <= n; len <<= 1) {
+        double ang = -2.0 * PI / len;
+        double wlen_re = cos(ang);
+        double wlen_im = sin(ang);
+
+        for (int i = 0; i < n; i += len) {
+            double wre = 1.0, wim = 0.0;
+            for (int j = 0; j < len/2; j++) {
+                int u = i + j;
+                int v = i + j + len/2;
+
+                double vr = re[v]*wre - im[v]*wim;
+                double vi = re[v]*wim + im[v]*wre;
+
+                re[v] = re[u] - vr;
+                im[v] = im[u] - vi;
+                re[u] += vr;
+                im[u] += vi;
+
+                double nwre = wre*wlen_re - wim*wlen_im;
+                wim = wre*wlen_im + wim*wlen_re;
+                wre = nwre;
+
+                if ((j % 32) == 0) {
+                    esp_task_wdt_reset();
+                    taskYIELD();
+                }
+            }
+        }
+    }
+}
+
+// ========= BENCHMARK 4: FFT =========
+static double bench_fft(size_t *heap_before, size_t *heap_after) {
+    *heap_before = heap_free_bytes();
+
+    static double re[FFT_N];
+    static double im[FFT_N];
+
+    for (int i = 0; i < FFT_N; i++) {
+        re[i] = sin(2.0 * PI * i / FFT_N);
+        im[i] = 0.0;
+    }
+
+    marker_high();
+    int64_t t0 = esp_timer_get_time();
+
+    for (int r = 0; r < FFT_RUNS; r++) {
+        double rtmp[FFT_N];
+        double itmp[FFT_N];
+        memcpy(rtmp, re, sizeof(re));
+        memcpy(itmp, im, sizeof(im));
+        fft_inplace(rtmp, itmp, FFT_N);
+    }
+
+    int64_t t1 = esp_timer_get_time();
+    marker_low();
+
+    *heap_after = heap_free_bytes();
+    return (double)(t1 - t0) / FFT_RUNS;
+}
+
+// ========= WIFI HTTP BENCHMARK =========
+static int http_get_latency_us(void) {
+    esp_http_client_config_t config = {
+        .url = HTTP_URL,
+        .method = HTTP_METHOD_GET,
+        .timeout_ms = 3000,
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+
+    int64_t t0 = esp_timer_get_time();
+    esp_http_client_perform(client);
+    int64_t t1 = esp_timer_get_time();
+
+    esp_http_client_cleanup(client);
+    return (int)(t1 - t0);
+}
+
+static double bench_wifi_http(size_t *heap_before, size_t *heap_after) {
+    *heap_before = heap_free_bytes();
+
+    double sum = 0;
+
+    // ---------- ОТКЛЮЧАЕМ WDT ТОЛЬКО НА HTTP ----------
+    esp_task_wdt_delete(NULL);
+
+    for (int i = 0; i < HTTP_REQS; i++) {
+        sum += http_get_latency_us();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    esp_task_wdt_add(NULL);
+    // --------------------------------------------
+
+    *heap_after = heap_free_bytes();
+    return (sum / HTTP_REQS);
+}
+
 // ========= BENCH TABLE =========
 typedef double (*bench_fn_t)(size_t*, size_t*);
 typedef struct { const char *name; bench_fn_t fn; } bench_entry_t;
@@ -186,7 +323,51 @@ static const bench_entry_t BENCHES[] = {
     { "gpio_toggle", bench_gpio_toggle },
     { "matmul_ikj",  bench_matmul_ikj },
     { "matmul_ijk",  bench_matmul_ijk },
+    { "fft",         bench_fft },
+    { "wifi_http",   bench_wifi_http },
 };
+
+// ========= WIFI EVENT =========
+static EventGroupHandle_t wifi_event_group;
+const int WIFI_CONNECTED_BIT = BIT0;
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                               int32_t event_id, void* event_data) {
+
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+// ========= WIFI INIT =========
+static void wifi_init(void) {
+    wifi_event_group = xEventGroupCreate();
+
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+
+    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL);
+    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+        },
+    };
+
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    esp_wifi_start();
+}
 
 // ========= TASK =========
 static void bench_task(void *arg) {
@@ -194,6 +375,9 @@ static void bench_task(void *arg) {
 
     gpio_prep();
     vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Ждем подключения к Wi-Fi
+    xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     printf("benchmark,mean_us,p95_us,heap_before,heap_after\n");
 
@@ -223,6 +407,9 @@ static void bench_task(void *arg) {
 
 // ========= APP MAIN =========
 void app_main(void) {
+    nvs_flash_init();
+    wifi_init();
+
     xTaskCreatePinnedToCore(
         bench_task,
         "bench",
