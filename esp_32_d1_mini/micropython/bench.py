@@ -14,8 +14,8 @@ gc.collect()
 gc.threshold(gc.mem_free() // 4)
 
 # ========= PIN ASSIGNMENTS =========
-PIN_TOGGLE = 2
-PIN_MARKER = 4
+PIN_TOGGLE = 3
+PIN_MARKER = 10
 
 toggle = Pin(PIN_TOGGLE, Pin.OUT)
 marker = Pin(PIN_MARKER, Pin.OUT)
@@ -218,12 +218,12 @@ def bench_wifi_http():
 
 # ========= BENCH TABLE =========
 BENCHES = [
-    ("busy_loop", bench_busy_loop),
+    ("busy_loop",   bench_busy_loop),
     ("gpio_toggle", bench_gpio_toggle),
-    ("matmul_ikj", lambda: bench_matmul(matmul_ikj)),
-    ("matmul_ijk", lambda: bench_matmul(matmul_ijk)),
-    ("fft", bench_fft),
-    ("wifi_http", bench_wifi_http),
+    ("matmul_ikj",  lambda: bench_matmul(matmul_ikj)),
+    ("matmul_ijk",  lambda: bench_matmul(matmul_ijk)),
+    ("fft",         bench_fft),
+    ("wifi_http",   bench_wifi_http),
 ]
 
 # ========= RUN =========
@@ -232,7 +232,7 @@ time.sleep_ms(500)
 # подключаем Wi-Fi
 wifi_connect("Olesya", "olesa200524")
 
-print("benchmark,mean_us,p95_us,heap_before,heap_after")
+print("benchmark,   mean_us,  p95_us, heap_before, heap_after")
 
 for name, fn in BENCHES:
 
@@ -248,7 +248,7 @@ for name, fn in BENCHES:
         runs.append(t)
         time.sleep_ms(200)
 
-    print("{},{:.2f},{:.2f},{},{}".format(
+    print("{}, {:.2f}, {:.2f}, {}, {}".format(
         name,
         sum(runs)/len(runs),
         p95(runs),

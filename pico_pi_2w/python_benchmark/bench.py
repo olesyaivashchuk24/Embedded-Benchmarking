@@ -231,27 +231,32 @@ time.sleep_ms(500)
 
 # подключаем Wi-Fi
 wifi_connect("Olesya", "olesa200524")
+print("NEW VERSION WITH HEAP")
 
-print("benchmark,mean_us,p95_us,heap_before,heap_after")
+print("benchmark,  mean_us,   p95_us,   heap_before,  heap_after")
 
 for name, fn in BENCHES:
 
-    # warm-up
     fn()
     time.sleep_ms(100)
 
     runs = []
-    h1 = h2 = 0
+    h1_list = []
+    h2_list = []
 
     for _ in range(RUNS_PER_BENCH):
-        t, h1, h2 = fn()
-        runs.append(t)
-        time.sleep_ms(200)
+     t, h1, h2 = fn()
+     runs.append(t)
+     h1_list.append(h1)
+     h2_list.append(h2)
+     time.sleep_ms(200)
 
-    print("{},{:.2f},{:.2f},{},{}".format(
-        name,
-        sum(runs)/len(runs),
-        p95(runs),
-        h1,
-        h2
-    ))
+    print("{},  {:.2f}, {:.2f},  {:.0f},    {:.0f}".format(
+     name,
+     sum(runs)/len(runs),
+     p95(runs),
+     sum(h1_list)/len(h1_list),
+     sum(h2_list)/len(h2_list)
+))
+
+

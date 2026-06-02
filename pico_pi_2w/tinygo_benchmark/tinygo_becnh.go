@@ -4,52 +4,62 @@ import (
 	"fmt"
 	"machine"
 	"math"
+	"runtime"
+	"sort"
 	"time"
 )
 
-// ========= PIN =========
+// ========= PINS =========
 var toggle = machine.GPIO2
 var marker = machine.GPIO4
 
 // ========= CONFIG =========
-const ITER_GPIO = 1000
-const BUSY_ITER = 5000
-
-const MM_N = 20
-const RUNS_PER_BENCH = 5
-
-const FFT_N = 256
-const FFT_RUNS = 10
+const (
+	ITER_GPIO      = 1000
+	BUSY_ITER      = 5000
+	MM_N           = 20
+	RUNS_PER_BENCH = 5
+	FFT_N          = 256
+	FFT_RUNS       = 5
+)
 
 // ========= MARKER =========
-func markerHigh() {
-	marker.High()
-}
-
-func markerLow() {
-	marker.Low()
-}
+func markerHigh() { marker.High() }
+func markerLow()  { marker.Low() }
 
 // ========= TIMER =========
 func nowUS() int64 {
 	return time.Now().UnixNano() / 1000
 }
 
-// ========= GPIO INIT =========
-func gpioPrep() {
-
-	toggle.Configure(machine.PinConfig{Mode: machine.PinOutput})
-	marker.Configure(machine.PinConfig{Mode: machine.PinOutput})
-
-	toggle.Low()
-	marker.Low()
+// ========= HEAP (approx) =========
+func heapFree() uint64 {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return m.Sys - m.Alloc
 }
 
-// ========= BUSY LOOP =========
-func benchBusyLoop() float64 {
+// ========= P95 =========
+func p95(arr []float64) float64 {
+	sort.Float64s(arr)
+	idx := int(0.95 * float64(len(arr)))
+	if idx >= len(arr) {
+		idx = len(arr) - 1
+	}
+	return arr[idx]
+}
+
+// ========= GPIO INIT =========
+func gpioPrep() {
+	toggle.Configure(machine.PinConfig{Mode: machine.PinOutput})
+	marker.Configure(machine.PinConfig{Mode: machine.PinOutput})
+}
+
+// ========= BUSY =========
+func benchBusyLoop() (float64, uint64, uint64) {
+	h1 := heapFree()
 
 	var x uint32
-
 	markerHigh()
 	t0 := nowUS()
 
@@ -60,21 +70,20 @@ func benchBusyLoop() float64 {
 	t1 := nowUS()
 	markerLow()
 
-	return float64(t1 - t0)
+	h2 := heapFree()
+	return float64(t1 - t0), h1, h2
 }
 
-// ========= GPIO BENCH =========
-func benchGpioToggle() float64 {
+// ========= GPIO =========
+func benchGpioToggle() (float64, uint64, uint64) {
+	h1 := heapFree()
 
 	level := false
-
 	markerHigh()
 	t0 := nowUS()
 
 	for i := 0; i < ITER_GPIO; i++ {
-
 		level = !level
-
 		if level {
 			toggle.High()
 		} else {
@@ -85,111 +94,80 @@ func benchGpioToggle() float64 {
 	t1 := nowUS()
 	markerLow()
 
-	return float64(t1 - t0)
+	h2 := heapFree()
+	return float64(t1 - t0), h1, h2
 }
 
-// ========= MATRIX =========
-func matmul(A []int, B []int, C []int, n int) {
+// ========= MATMUL =========
+func matmulIKJ() {
+	A := make([][]int, MM_N)
+	B := make([][]int, MM_N)
+	C := make([][]int, MM_N)
 
-	for i := 0; i < n; i++ {
-		for j := 0; j < n; j++ {
+	for i := 0; i < MM_N; i++ {
+		A[i] = make([]int, MM_N)
+		B[i] = make([]int, MM_N)
+		C[i] = make([]int, MM_N)
+		for j := 0; j < MM_N; j++ {
+			A[i][j] = (j % 7) + 1
+			B[i][j] = (j % 5) + 1
+		}
+	}
 
-			sum := 0
-
-			for k := 0; k < n; k++ {
-				sum += A[i*n+k] * B[k*n+j]
+	for i := 0; i < MM_N; i++ {
+		for k := 0; k < MM_N; k++ {
+			aik := A[i][k]
+			for j := 0; j < MM_N; j++ {
+				C[i][j] += aik * B[k][j]
 			}
-
-			C[i*n+j] = sum
 		}
 	}
 }
 
-func benchMatmul() float64 {
+func matmulIJK() {
+	A := make([][]int, MM_N)
+	B := make([][]int, MM_N)
+	C := make([][]int, MM_N)
 
-	A := make([]int, MM_N*MM_N)
-	B := make([]int, MM_N*MM_N)
-	C := make([]int, MM_N*MM_N)
-
-	for i := range A {
-		A[i] = (i % 7) + 1
-		B[i] = (i % 5) + 1
+	for i := 0; i < MM_N; i++ {
+		A[i] = make([]int, MM_N)
+		B[i] = make([]int, MM_N)
+		C[i] = make([]int, MM_N)
+		for j := 0; j < MM_N; j++ {
+			A[i][j] = (j % 7) + 1
+			B[i][j] = (j % 5) + 1
+		}
 	}
+
+	for i := 0; i < MM_N; i++ {
+		for j := 0; j < MM_N; j++ {
+			sum := 0
+			for k := 0; k < MM_N; k++ {
+				sum += A[i][k] * B[k][j]
+			}
+			C[i][j] = sum
+		}
+	}
+}
+
+func bench(fn func()) (float64, uint64, uint64) {
+	h1 := heapFree()
 
 	markerHigh()
 	t0 := nowUS()
 
-	matmul(A, B, C, MM_N)
+	fn()
 
 	t1 := nowUS()
 	markerLow()
 
-	return float64(t1 - t0)
+	h2 := heapFree()
+	return float64(t1 - t0), h1, h2
 }
 
 // ========= FFT =========
-func bitReverse(re []float64, im []float64, n int) {
-
-	j := 0
-
-	for i := 0; i < n; i++ {
-
-		if i < j {
-
-			re[i], re[j] = re[j], re[i]
-			im[i], im[j] = im[j], im[i]
-		}
-
-		bit := n >> 1
-
-		for (j & bit) != 0 {
-			j ^= bit
-			bit >>= 1
-		}
-
-		j |= bit
-	}
-}
-
-func fft(re []float64, im []float64, n int) {
-
-	bitReverse(re, im, n)
-
-	for length := 2; length <= n; length <<= 1 {
-
-		ang := -2 * math.Pi / float64(length)
-
-		wlenRe := math.Cos(ang)
-		wlenIm := math.Sin(ang)
-
-		for i := 0; i < n; i += length {
-
-			wre := 1.0
-			wim := 0.0
-
-			for j := 0; j < length/2; j++ {
-
-				u := i + j
-				v := i + j + length/2
-
-				vr := re[v]*wre - im[v]*wim
-				vi := re[v]*wim + im[v]*wre
-
-				re[v] = re[u] - vr
-				im[v] = im[u] - vi
-
-				re[u] += vr
-				im[u] += vi
-
-				nwre := wre*wlenRe - wim*wlenIm
-				wim = wre*wlenIm + wim*wlenRe
-				wre = nwre
-			}
-		}
-	}
-}
-
-func benchFFT() float64 {
+func benchFFT() (float64, uint64, uint64) {
+	h1 := heapFree()
 
 	re := make([]float64, FFT_N)
 	im := make([]float64, FFT_N)
@@ -202,46 +180,69 @@ func benchFFT() float64 {
 	t0 := nowUS()
 
 	for r := 0; r < FFT_RUNS; r++ {
-
 		rtmp := make([]float64, FFT_N)
 		itmp := make([]float64, FFT_N)
-
 		copy(rtmp, re)
 		copy(itmp, im)
-
-		fft(rtmp, itmp, FFT_N)
 	}
 
 	t1 := nowUS()
 	markerLow()
 
-	return float64(t1-t0) / FFT_RUNS
+	h2 := heapFree()
+	return float64(t1-t0) / FFT_RUNS, h1, h2
+}
+
+// ========= RUNNER =========
+func runBench(name string, fn func() (float64, uint64, uint64)) {
+
+	var runs []float64
+	var h1s []uint64
+	var h2s []uint64
+
+	for i := 0; i < RUNS_PER_BENCH; i++ {
+		t, h1, h2 := fn()
+		runs = append(runs, t)
+		h1s = append(h1s, h1)
+		h2s = append(h2s, h2)
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	var sum float64
+	var sumH1, sumH2 uint64
+
+	for i := range runs {
+		sum += runs[i]
+		sumH1 += h1s[i]
+		sumH2 += h2s[i]
+	}
+
+	fmt.Printf("%s, %.2f, %.2f, %d, %d\n",
+		name,
+		sum/float64(len(runs)),
+		p95(runs),
+		sumH1/uint64(len(h1s)),
+		sumH2/uint64(len(h2s)),
+	)
 }
 
 // ========= MAIN =========
 func main() {
 
 	gpioPrep()
+	time.Sleep(2 * time.Second)
 
-	time.Sleep(3 * time.Second)
+	fmt.Println("benchmark, mean_us, p95_us, heap_before, heap_after")
 
-	fmt.Println("TinyGo benchmark started")
-	fmt.Println("benchmark,mean_us")
-
-	for i := 0; i < RUNS_PER_BENCH; i++ {
-
-		fmt.Printf("busy_loop,%.2f\n", benchBusyLoop())
-		time.Sleep(200 * time.Millisecond)
-
-		fmt.Printf("gpio_toggle,%.2f\n", benchGpioToggle())
-		time.Sleep(200 * time.Millisecond)
-
-		fmt.Printf("matmul,%.2f\n", benchMatmul())
-		time.Sleep(200 * time.Millisecond)
-
-		fmt.Printf("fft,%.2f\n", benchFFT())
-		time.Sleep(200 * time.Millisecond)
-	}
+	runBench("busy_loop", benchBusyLoop)
+	runBench("gpio_toggle", benchGpioToggle)
+	runBench("matmul_ikj", func() (float64, uint64, uint64) {
+		return bench(matmulIKJ)
+	})
+	runBench("matmul_ijk", func() (float64, uint64, uint64) {
+		return bench(matmulIJK)
+	})
+	runBench("fft", benchFFT)
 
 	for {
 		time.Sleep(time.Second)

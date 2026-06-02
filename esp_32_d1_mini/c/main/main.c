@@ -32,8 +32,8 @@
 #define PI 3.14159265358979323846
 
 // ========= WIFI CONFIG =========
-#define WIFI_SSID "WIFI username"
-#define WIFI_PASS "WIFI password"
+#define WIFI_SSID "WIFI_SSID"
+#define WIFI_PASS "WIFI_PASS"
 #define HTTP_URL "http://httpbin.org/get"
 #define HTTP_REQS 20
 
@@ -152,15 +152,20 @@ static double bench_matmul(size_t *heap_before, size_t *heap_after, mm_fn_t fn) 
         B[i] = (i % 5) + 1;
     }
 
-    marker_high();
-    int64_t t0 = esp_timer_get_time();
+    marker_high()    int64_t t0 = esp_timer_get_time();
+
     fn(A, B, C, MM_N);
+
     int64_t t1 = esp_timer_get_time();
     marker_low();
 
+    free(A);
+    free(B);
+    free(C);
+
+    
     *heap_after = heap_free_bytes();
 
-    free(A); free(B); free(C);
     return (double)(t1 - t0);
 }
 
@@ -281,7 +286,7 @@ static int http_get_latency_us(void) {
     esp_http_client_config_t config = {
         .url = HTTP_URL,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = 3000,
+        .timeout_ms = 10000,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -299,7 +304,6 @@ static double bench_wifi_http(size_t *heap_before, size_t *heap_after) {
 
     double sum = 0;
 
-    // ---------- DISABLE WDT ONLY ON HTTP ----------
     esp_task_wdt_delete(NULL);
 
     for (int i = 0; i < HTTP_REQS; i++) {
@@ -308,7 +312,6 @@ static double bench_wifi_http(size_t *heap_before, size_t *heap_after) {
     }
 
     esp_task_wdt_add(NULL);
-    // --------------------------------------------
 
     *heap_after = heap_free_bytes();
     return (sum / HTTP_REQS);
@@ -376,10 +379,9 @@ static void bench_task(void *arg) {
     gpio_prep();
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Waiting to connect to Wi-Fi
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
-    printf("benchmark,mean_us,p95_us,heap_before,heap_after\n");
+    printf("benchmark,   mean_us,  p95_us, heap_before, heap_after\n\n");
 
     for (int b = 0; b < sizeof(BENCHES)/sizeof(BENCHES[0]); b++) {
         double runs[RUNS_PER_BENCH];
@@ -392,7 +394,7 @@ static void bench_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(200));
         }
 
-        printf("%s,%.2f,%.2f,%u,%u\n",
+        printf("%s,   %.2f,  %.2f, %u, %u\n\n",
             BENCHES[b].name,
             sum / RUNS_PER_BENCH,
             calculate_p95(runs, RUNS_PER_BENCH),
