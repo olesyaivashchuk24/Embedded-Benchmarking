@@ -32,8 +32,8 @@
 #define PI 3.14159265358979323846
 
 // ========= WIFI CONFIG =========
-#define WIFI_SSID "Olesya"
-#define WIFI_PASS "olesa200524"
+#define WIFI_SSID "WIFI username"
+#define WIFI_PASS "WIFI password"
 #define HTTP_URL "http://httpbin.org/get"
 #define HTTP_REQS 20
 
@@ -299,7 +299,7 @@ static double bench_wifi_http(size_t *heap_before, size_t *heap_after) {
 
     double sum = 0;
 
-    // ---------- ОТКЛЮЧАЕМ WDT ТОЛЬКО НА HTTP ----------
+    // ---------- DISABLE WDT ONLY ON HTTP ----------
     esp_task_wdt_delete(NULL);
 
     for (int i = 0; i < HTTP_REQS; i++) {
@@ -376,7 +376,7 @@ static void bench_task(void *arg) {
     gpio_prep();
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    // Ждем подключения к Wi-Fi
+    // Waiting to connect to Wi-Fi
     xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
 
     printf("benchmark,mean_us,p95_us,heap_before,heap_after\n");
