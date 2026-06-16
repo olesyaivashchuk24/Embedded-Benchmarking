@@ -30,8 +30,6 @@ generated/
 
 # Logs
 *.log
-
-pico_pi_2w/wifi_example/
 esp_32_d1_mini/c/components/
 sdkconfig
 sdkconfig.old
