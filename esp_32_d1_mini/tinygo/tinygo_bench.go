@@ -9,23 +9,21 @@ import (
 	"time"
 )
 
+// ========= BENCH CONFIG =========
 const (
 	ITER_GPIO      = 1000
-	MM_N           = 20
-	RUNS_PER_BENCH = 5
+	MM_N           = 32 // 32x32 matrix (matches paper)
+	RUNS_PER_BENCH = 20 // 20 runs for meaningful p95
 	BUSY_ITER      = 5000
-
-	FFT_N    = 256
-	FFT_RUNS = 5
+	FFT_N          = 256
+	FFT_RUNS       = 5
 )
 
-// ======== GLOBAL BUFFERS (no alloc during bench) ========
-
+// ========= GLOBAL BUFFERS (no alloc during bench) =========
 var (
-	A = make([][]float64, MM_N)
-	B = make([][]float64, MM_N)
-	C = make([][]float64, MM_N)
-
+	A    = make([][]float64, MM_N)
+	B    = make([][]float64, MM_N)
+	C    = make([][]float64, MM_N)
 	re   = make([]float64, FFT_N)
 	im   = make([]float64, FFT_N)
 	rtmp = make([]float64, FFT_N)
@@ -33,7 +31,6 @@ var (
 )
 
 // ========= UTILS =========
-
 func heapFree() uint64 {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
@@ -41,41 +38,48 @@ func heapFree() uint64 {
 }
 
 func p95(times []float64) float64 {
-	sort.Float64s(times)
-	idx := int(0.95 * float64(len(times)))
-	if idx >= len(times) {
-		idx = len(times) - 1
+	cp := make([]float64, len(times))
+	copy(cp, times)
+	sort.Float64s(cp)
+	idx := int(0.95 * float64(len(cp)))
+	if idx >= len(cp) {
+		idx = len(cp) - 1
 	}
-	return times[idx]
+	return cp[idx]
 }
 
-// ========= BENCH 1 =========
+func mean(times []float64) float64 {
+	var sum float64
+	for _, v := range times {
+		sum += v
+	}
+	return sum / float64(len(times))
+}
 
+// ========= BENCH 1: BUSY LOOP =========
 func benchBusyLoop() (float64, uint64, uint64) {
 	runtime.GC()
 	h1 := heapFree()
-
 	x := uint32(0)
-	start := time.Now()
 
+	start := time.Now()
 	for i := 0; i < BUSY_ITER; i++ {
 		x = x*1664525 + 1013904223
 	}
-
 	elapsed := time.Since(start).Microseconds()
+	_ = x // prevent compiler from optimizing the loop away
+
 	h2 := heapFree()
 	return float64(elapsed), h1, h2
 }
 
-// ========= BENCH 2 =========
-
+// ========= BENCH 2: GPIO =========
 func benchGpioToggle(pin machine.Pin) (float64, uint64, uint64) {
 	runtime.GC()
 	h1 := heapFree()
-
 	level := false
-	start := time.Now()
 
+	start := time.Now()
 	for i := 0; i < ITER_GPIO; i++ {
 		level = !level
 		if level {
@@ -84,21 +88,19 @@ func benchGpioToggle(pin machine.Pin) (float64, uint64, uint64) {
 			pin.Low()
 		}
 	}
-
 	elapsed := time.Since(start).Microseconds()
+
 	h2 := heapFree()
 	return float64(elapsed), h1, h2
 }
 
-// ========= MATRIX =========
-
+// ========= BENCH 3: MATRIX =========
 func matmulIKJ() {
 	for i := 0; i < MM_N; i++ {
 		for j := 0; j < MM_N; j++ {
 			C[i][j] = 0
 		}
 	}
-
 	for i := 0; i < MM_N; i++ {
 		for k := 0; k < MM_N; k++ {
 			aik := A[i][k]
@@ -115,7 +117,6 @@ func matmulIJK() {
 			C[i][j] = 0
 		}
 	}
-
 	for i := 0; i < MM_N; i++ {
 		for j := 0; j < MM_N; j++ {
 			sum := 0.0
@@ -139,11 +140,27 @@ func benchMatmul(fn func()) (float64, uint64, uint64) {
 	return float64(elapsed), h1, h2
 }
 
-// ========= FFT =========
+// ========= BENCH 4: FFT =========
+func bitReverse(re, im []float64, n int) {
+	j := 0
+	for i := 0; i < n; i++ {
+		if i < j {
+			re[i], re[j] = re[j], re[i]
+			im[i], im[j] = im[j], im[i]
+		}
+		bit := n >> 1
+		for j&bit != 0 {
+			j ^= bit
+			bit >>= 1
+		}
+		j |= bit
+	}
+}
 
 func fftInplace(re, im []float64, n int) {
-	length := 2
+	bitReverse(re, im, n) // required for correct FFT output
 
+	length := 2
 	for length <= n {
 		ang := -2 * math.Pi / float64(length)
 		wlenRe := math.Cos(ang)
@@ -152,7 +169,6 @@ func fftInplace(re, im []float64, n int) {
 		for i := 0; i < n; i += length {
 			wre := 1.0
 			wim := 0.0
-
 			for j := 0; j < length/2; j++ {
 				u := i + j
 				v := i + j + length/2
@@ -179,22 +195,19 @@ func benchFFT() (float64, uint64, uint64) {
 	h1 := heapFree()
 
 	start := time.Now()
-
 	for i := 0; i < FFT_RUNS; i++ {
 		copy(rtmp, re)
 		copy(itmp, im)
 		fftInplace(rtmp, itmp, FFT_N)
 	}
-
 	elapsed := time.Since(start).Microseconds()
+
 	h2 := heapFree()
 	return float64(elapsed) / FFT_RUNS, h1, h2
 }
 
 // ========= MAIN =========
-
 func main() {
-
 	time.Sleep(5 * time.Second)
 
 	// init matrices
@@ -230,7 +243,7 @@ func main() {
 	}
 
 	for _, b := range benches {
-
+		// warmup run — not recorded
 		b.fn()
 		time.Sleep(200 * time.Millisecond)
 
@@ -245,14 +258,9 @@ func main() {
 			time.Sleep(200 * time.Millisecond)
 		}
 
-		var sum float64
-		for _, v := range runs {
-			sum += v
-		}
-
 		fmt.Printf("%s,%.2f,%.2f,%d,%d\n",
 			b.name,
-			sum/float64(len(runs)),
+			mean(runs),
 			p95(runs),
 			h1,
 			h2,
