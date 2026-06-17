@@ -1,23 +1,26 @@
 cmake_minimum_required(VERSION 3.13)
 
+set(PICO_SDK_PATH "/Users/olesaivasuk/pico-sdk-new")
+set(PICO_BOARD pico2_w)
+
 include(pico_sdk_import.cmake)
 
-project(pico_wifi_example C CXX ASM)
-
-# Указываем путь к SDK (если не стандартный)
-set(PICO_SDK_PATH "/Users/olesaivasuk/pico-sdk-new")
-list(APPEND CMAKE_PREFIX_PATH "${PICO_SDK_PATH}")
+project(pico_bench C CXX ASM)
 
 pico_sdk_init()
 
-add_executable(pico_wifi_example c_pico_bench.c)
+add_executable(pico_bench main.c)
 
-target_link_libraries(pico_wifi_example
+target_link_libraries(pico_bench
     pico_stdlib
     pico_cyw43_arch_lwip_threadsafe_background
+    hardware_gpio
+    hardware_timer
 )
 
-pico_enable_stdio_usb(pico_wifi_example 1)
-pico_enable_stdio_uart(pico_wifi_example 0)
+target_include_directories(pico_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-pico_add_extra_outputs(pico_wifi_example)
+pico_enable_stdio_usb(pico_bench 1)
+pico_enable_stdio_uart(pico_bench 0)
+
+pico_add_extra_outputs(pico_bench)
