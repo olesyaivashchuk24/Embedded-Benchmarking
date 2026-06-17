@@ -2,12 +2,14 @@ import time
 import gc
 import sys
 import math
-import network
-import urequests
 from machine import Pin
 
 # ========= ENV INFO =========
 print("micropython:", sys.implementation)
+
+# ========= WIFI CONFIG =========
+WIFI_SSID     = "YOUR_SSID"
+WIFI_PASSWORD = "YOUR_PASSWORD"
 
 # ========= GC CONTROL =========
 gc.collect()
@@ -15,7 +17,7 @@ gc.threshold(gc.mem_free() // 4)
 
 # ========= PIN ASSIGNMENTS =========
 PIN_TOGGLE = 2
-PIN_MARKER = 4
+PIN_MARKER = 3
 
 toggle = Pin(PIN_TOGGLE, Pin.OUT)
 marker = Pin(PIN_MARKER, Pin.OUT)
@@ -27,40 +29,25 @@ def marker_low():
     marker.value(0)
 
 # ========= BENCH CONFIG =========
-ITER_GPIO = 1000
-MM_N = 20
-RUNS_PER_BENCH = 5
-BUSY_ITER = 5000
-
-FFT_N = 256
-FFT_RUNS = 5
-
-HTTP_URL = "http://httpbin.org/get"
-HTTP_REQS = 10
+ITER_GPIO      = 1000
+MM_N           = 32   # 32x32 matrix (matches paper)
+RUNS_PER_BENCH = 20   # 20 runs for meaningful p95
+BUSY_ITER      = 5000
+FFT_N          = 256
+FFT_RUNS       = 5
 
 # ========= UTILS =========
 def heap_free_bytes():
     gc.collect()
     return gc.mem_free()
 
+def mean(values):
+    return sum(values) / len(values)
+
 def p95(times):
-    times = sorted(times)
-    idx = int(0.95 * len(times))
-    if idx >= len(times):
-        idx = len(times) - 1
-    return times[idx]
-
-# ========= WIFI =========
-def wifi_connect(ssid, password):
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-
-    if not wlan.isconnected():
-        wlan.connect(ssid, password)
-        while not wlan.isconnected():
-            time.sleep_ms(100)
-
-    return wlan
+    sorted_times = sorted(times)
+    idx = min(int(0.95 * len(sorted_times)), len(sorted_times) - 1)
+    return sorted_times[idx]
 
 # ========= BENCH 1: BUSY LOOP =========
 def bench_busy_loop():
@@ -101,7 +88,7 @@ def bench_gpio_toggle():
 def matmul_ikj():
     A = [[(i % 7) + 1 for i in range(MM_N)] for _ in range(MM_N)]
     B = [[(i % 5) + 1 for i in range(MM_N)] for _ in range(MM_N)]
-    C = [[0]*MM_N for _ in range(MM_N)]
+    C = [[0] * MM_N for _ in range(MM_N)]
 
     for i in range(MM_N):
         for k in range(MM_N):
@@ -112,7 +99,7 @@ def matmul_ikj():
 def matmul_ijk():
     A = [[(i % 7) + 1 for i in range(MM_N)] for _ in range(MM_N)]
     B = [[(i % 5) + 1 for i in range(MM_N)] for _ in range(MM_N)]
-    C = [[0]*MM_N for _ in range(MM_N)]
+    C = [[0] * MM_N for _ in range(MM_N)]
 
     for i in range(MM_N):
         for j in range(MM_N):
@@ -162,17 +149,17 @@ def fft_inplace(re, im, n):
                 u = i + j
                 v = i + j + length // 2
 
-                vr = re[v]*wre - im[v]*wim
-                vi = re[v]*wim + im[v]*wre
+                vr = re[v] * wre - im[v] * wim
+                vi = re[v] * wim + im[v] * wre
 
                 re[v] = re[u] - vr
                 im[v] = im[u] - vi
                 re[u] += vr
                 im[u] += vi
 
-                nwre = wre*wlen_re - wim*wlen_im
-                wim = wre*wlen_im + wim*wlen_re
-                wre = nwre
+                nwre = wre * wlen_re - wim * wlen_im
+                wim  = wre * wlen_im + wim * wlen_re
+                wre  = nwre
 
         length <<= 1
 
@@ -196,47 +183,22 @@ def bench_fft():
     h2 = heap_free_bytes()
     return time.ticks_diff(t1, t0) / FFT_RUNS, h1, h2
 
-# ========= BENCH 5: WIFI HTTP =========
-def bench_wifi_http():
-    h1 = heap_free_bytes()
-    total = 0
-
-    marker_high()
-
-    for _ in range(HTTP_REQS):
-        start = time.ticks_us()
-        r = urequests.get(HTTP_URL)
-        r.close()
-        end = time.ticks_us()
-        total += time.ticks_diff(end, start)
-        time.sleep_ms(50)
-
-    marker_low()
-
-    h2 = heap_free_bytes()
-    return total / HTTP_REQS, h1, h2
-
 # ========= BENCH TABLE =========
 BENCHES = [
-    ("busy_loop", bench_busy_loop),
+    ("busy_loop",  bench_busy_loop),
     ("gpio_toggle", bench_gpio_toggle),
     ("matmul_ikj", lambda: bench_matmul(matmul_ikj)),
     ("matmul_ijk", lambda: bench_matmul(matmul_ijk)),
-    ("fft", bench_fft),
-    ("wifi_http", bench_wifi_http),
+    ("fft",        bench_fft),
 ]
 
 # ========= RUN =========
 time.sleep_ms(500)
 
-# подключаем Wi-Fi
-wifi_connect("Olesya", "olesa200524")
-print("NEW VERSION WITH HEAP")
-
-print("benchmark,  mean_us,   p95_us,   heap_before,  heap_after")
+print("benchmark,mean_us,p95_us,heap_before,heap_after")
 
 for name, fn in BENCHES:
-
+    # warmup run — not recorded
     fn()
     time.sleep_ms(100)
 
@@ -245,18 +207,16 @@ for name, fn in BENCHES:
     h2_list = []
 
     for _ in range(RUNS_PER_BENCH):
-     t, h1, h2 = fn()
-     runs.append(t)
-     h1_list.append(h1)
-     h2_list.append(h2)
-     time.sleep_ms(200)
+        t, h1, h2 = fn()
+        runs.append(t)
+        h1_list.append(h1)
+        h2_list.append(h2)
+        time.sleep_ms(200)
 
-    print("{},  {:.2f}, {:.2f},  {:.0f},    {:.0f}".format(
-     name,
-     sum(runs)/len(runs),
-     p95(runs),
-     sum(h1_list)/len(h1_list),
-     sum(h2_list)/len(h2_list)
-))
-
-
+    print("{},{:.2f},{:.2f},{:.0f},{:.0f}".format(
+        name,
+        mean(runs),
+        p95(runs),
+        mean(h1_list),
+        mean(h2_list)
+    ))
